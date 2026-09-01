@@ -279,14 +279,14 @@ kubectl rollout restart deploy -n envoy-gateway-system envoy-gateway
 
 ## External provider (PassthroughModel) not working
 
-**Upstream 401 / auth errors from an OpenAI-compatible provider.** The gateway injects the key from `spec.provider.credentialSecretName`. Confirm the Secret exists in the operator namespace and has an `apiKey` key:
+**Upstream 401 / auth errors from an OpenAI-compatible provider.** The gateway injects the key from `spec.provider.credentialSecretName`. Inspect the credential condition first:
 
-```bash
-kubectl -n nebari-llm-serving-system get secret <credentialSecretName> \
-  -o jsonpath='{.data.apiKey}' | base64 -d | head -c 8; echo
+```console
+$ kubectl -n nebari-llm-serving-system get passthroughmodel <name> \
+    -o jsonpath='{range .status.conditions[?(@.type=="CredentialResolved")]}{.status} {.reason}: {.message}{"\n"}{end}'
 ```
 
-If empty or the wrong key name, recreate it: the key MUST be named `apiKey`.
+`SecretNotFound` means the referenced Secret does not exist in the PassthroughModel's namespace. `APIKeyMissing` means the Secret exists but its `apiKey` entry is absent or empty. Create or update the Secret with that exact key name; the operator watches referenced credential Secrets and refreshes the condition automatically. `Resolved` confirms only that the entry is non-empty. If the provider still returns 401, replace an invalid, expired, or revoked key.
 
 **Upstream auth errors from Bedrock (SigV4 signing failures, `AccessDeniedException`, `UnrecognizedClientException`).** A Bedrock provider authenticates with workload identity; there is no upstream credential Secret to check (the webhook rejects `credentialSecretName` on workload identity). The AWS identity belongs to the Envoy data-plane pod running the AI Gateway `extproc` container, not the operator. Check the EKS Pod Identity association or IRSA annotation on the data-plane ServiceAccount, that the role grants `bedrock:InvokeModel` / `bedrock:InvokeModelWithResponseStream` for the declared models, and that `spec.provider.backend.bedrock.region` matches where the models are enabled:
 
