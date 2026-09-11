@@ -281,12 +281,12 @@ kubectl rollout restart deploy -n envoy-gateway-system envoy-gateway
 
 **Upstream 401 / auth errors from an OpenAI-compatible provider.** The gateway injects the key from `spec.provider.credentialSecretName`. Inspect the credential condition first:
 
-```console
-$ kubectl -n nebari-llm-serving-system get passthroughmodel <name> \
-    -o jsonpath='{range .status.conditions[?(@.type=="CredentialResolved")]}{.status} {.reason}: {.message}{"\n"}{end}'
+```bash
+kubectl -n nebari-llm-serving-system get passthroughmodel <name> \
+  -o jsonpath='{range .status.conditions[?(@.type=="UpstreamCredentialResolved")]}{.status} {.reason}: {.message}{"\n"}{end}'
 ```
 
-`SecretNotFound` means the referenced Secret does not exist in the PassthroughModel's namespace. `APIKeyMissing` means the Secret exists but its `apiKey` entry is absent or empty. Create or update the Secret with that exact key name; the operator watches referenced credential Secrets and refreshes the condition automatically. `Resolved` confirms only that the entry is non-empty. If the provider still returns 401, replace an invalid, expired, or revoked key.
+`SecretNotFound` means the referenced Secret does not exist in the PassthroughModel's namespace. `APIKeyMissing` means the Secret exists but its `apiKey` entry is absent or empty. `LookupFailed` indicates a temporary Kubernetes API or cache read error; inspect the condition message and operator health. Create or update the Secret with that exact key name; the operator watches referenced credential Secrets and refreshes the condition automatically. `Resolved` confirms only that the entry is non-empty. If the provider still returns 401, replace an invalid, expired, or revoked key.
 
 **Upstream auth errors from Bedrock (SigV4 signing failures, `AccessDeniedException`, `UnrecognizedClientException`).** A Bedrock provider authenticates with workload identity; there is no upstream credential Secret to check (the webhook rejects `credentialSecretName` on workload identity). The AWS identity belongs to the Envoy data-plane pod running the AI Gateway `extproc` container, not the operator. Check the EKS Pod Identity association or IRSA annotation on the data-plane ServiceAccount, that the role grants `bedrock:InvokeModel` / `bedrock:InvokeModelWithResponseStream` for the declared models, and that `spec.provider.backend.bedrock.region` matches where the models are enabled:
 
