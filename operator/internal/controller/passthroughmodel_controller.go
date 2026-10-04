@@ -39,6 +39,7 @@ import (
 	llmv1alpha1 "github.com/nebari-dev/nebari-llm-serving-pack/operator/api/v1alpha1"
 	"github.com/nebari-dev/nebari-llm-serving-pack/operator/internal/config"
 	"github.com/nebari-dev/nebari-llm-serving-pack/operator/internal/controller/reconcilers"
+	"github.com/nebari-dev/nebari-llm-serving-pack/operator/internal/provider"
 )
 
 // Condition types reported on PassthroughModel status.
@@ -96,8 +97,10 @@ func (r *PassthroughModelReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
-	credentialCondition := resolveUpstreamCredential(ctx, r.Client, pm)
-	conditions := []metav1.Condition{credentialCondition}
+	conditions := []metav1.Condition{}
+	if provider.UsesCredentialSecret(pm.Spec.Provider) {
+		conditions = append(conditions, resolveUpstreamCredential(ctx, r.Client, pm))
+	}
 
 	clientIDs, err := apiKeyClientIDs(ctx, r.Client, pm.Name, pm.Namespace)
 	if err != nil {
@@ -140,7 +143,6 @@ func (r *PassthroughModelReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// reconcile is requeued so the resources are retried once the CRDs exist
 	// (the same surface-and-requeue convention as the LLMModel reconciler).
 	cleanupPending := false
-
 	backendErr := r.applyAll(ctx, log, pm,
 		resources.Backend,
 		resources.BackendTLSPolicy,
@@ -206,6 +208,10 @@ func (r *PassthroughModelReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 	if cleanupPending {
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+	}
+	if meta.IsStatusConditionPresentAndEqual(conditions, CondUpstreamCredentialResolved, metav1.ConditionUnknown) {
+		// Retry the informational probe without blocking resource provisioning.
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 	return ctrl.Result{}, nil
 }
@@ -327,15 +333,6 @@ func disabledCondition(condType string) metav1.Condition {
 	}
 }
 
-func passthroughPhaseForConditions(conditions []metav1.Condition) llmv1alpha1.PassthroughModelPhase {
-	for _, condition := range conditions {
-		if condition.Status == metav1.ConditionFalse && condition.Reason == "ApplyFailed" {
-			return llmv1alpha1.PassthroughPhaseError
-		}
-	}
-	return llmv1alpha1.PassthroughPhaseReady
-}
-
 func (r *PassthroughModelReconciler) updateStatus(
 	ctx context.Context,
 	log controllerLogger,
@@ -354,6 +351,10 @@ func (r *PassthroughModelReconciler) updateStatus(
 	// Empty on a build failure: the provider could not be resolved, so no
 	// address is claimed. Display clients read this instead of resolving.
 	fresh.Status.ProviderHostname = providerHostname
+	if meta.FindStatusCondition(conditions, CondUpstreamCredentialResolved) == nil {
+		// Workload identity has no Secret to inspect; discard any previous result.
+		meta.RemoveStatusCondition(&fresh.Status.Conditions, CondUpstreamCredentialResolved)
+	}
 	for _, c := range conditions {
 		c.ObservedGeneration = fresh.Generation
 		meta.SetStatusCondition(&fresh.Status.Conditions, c)

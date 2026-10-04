@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	llmv1alpha1 "github.com/nebari-dev/nebari-llm-serving-pack/operator/api/v1alpha1"
+	"github.com/nebari-dev/nebari-llm-serving-pack/operator/internal/provider"
 )
 
 // This file handles the status-only upstream credential probe and its
@@ -93,7 +94,7 @@ func newUpstreamCredentialCondition(status metav1.ConditionStatus, reason, messa
 // indexPassthroughModelByUpstreamCredentialSecret indexes the referenced Secret name.
 func indexPassthroughModelByUpstreamCredentialSecret(obj client.Object) []string {
 	pm, ok := obj.(*llmv1alpha1.PassthroughModel)
-	if !ok || pm.Spec.Provider.CredentialSecretName == "" {
+	if !ok || !provider.UsesCredentialSecret(pm.Spec.Provider) || pm.Spec.Provider.CredentialSecretName == "" {
 		return nil
 	}
 	return []string{pm.Spec.Provider.CredentialSecretName}

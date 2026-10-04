@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -275,8 +276,9 @@ var _ = Describe("PassthroughModel Controller", func() {
 			}
 
 			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: pmName, Namespace: "default"}}
-			_, err := r.Reconcile(ctx, req)
+			result, err := r.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(15 * time.Second))
 
 			pm := &llmv1alpha1.PassthroughModel{}
 			Expect(k8sClient.Get(ctx, req.NamespacedName, pm)).To(Succeed())
@@ -295,6 +297,38 @@ var _ = Describe("PassthroughModel Controller", func() {
 				Namespace: "default",
 			}, apiKeySecret)).To(Succeed())
 		})
+
+		DescribeTable("removes the Secret condition for workload identity and restores it for API keys",
+			func(credential *llmv1alpha1.ProviderCredential) {
+				r := newPassthroughReconciler()
+				req := reconcile.Request{NamespacedName: types.NamespacedName{Name: pmName, Namespace: "default"}}
+				_, err := r.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+				pm := &llmv1alpha1.PassthroughModel{}
+				Expect(k8sClient.Get(ctx, req.NamespacedName, pm)).To(Succeed())
+				Expect(meta.FindStatusCondition(pm.Status.Conditions, CondUpstreamCredentialResolved)).NotTo(BeNil())
+				apiKeyProvider := pm.Spec.Provider
+				pm.Spec.Provider = bedrockCredentialTestProvider(credential)
+				Expect(k8sClient.Update(ctx, pm)).To(Succeed())
+				_, err = r.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(k8sClient.Get(ctx, req.NamespacedName, pm)).To(Succeed())
+				Expect(meta.FindStatusCondition(pm.Status.Conditions, CondUpstreamCredentialResolved)).To(BeNil())
+				Expect(pm.Status.ProviderHostname).To(Equal("bedrock-runtime.us-west-2.amazonaws.com"))
+				Expect(pm.Status.ObservedGeneration).To(Equal(pm.Generation))
+				pm.Spec.Provider = apiKeyProvider
+				Expect(k8sClient.Update(ctx, pm)).To(Succeed())
+				_, err = r.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(k8sClient.Get(ctx, req.NamespacedName, pm)).To(Succeed())
+				condition := meta.FindStatusCondition(pm.Status.Conditions, CondUpstreamCredentialResolved)
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Reason).To(Equal("SecretNotFound"))
+				Expect(condition.ObservedGeneration).To(Equal(pm.Generation))
+			},
+			Entry("backend default", (*llmv1alpha1.ProviderCredential)(nil)),
+			Entry("explicit credential", &llmv1alpha1.ProviderCredential{Type: llmv1alpha1.CredentialWorkloadIdentity}),
+		)
 
 		It("cleans up the Secret and ConfigMap on deletion", func() {
 			r := newPassthroughReconciler()
